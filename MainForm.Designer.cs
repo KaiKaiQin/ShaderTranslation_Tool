@@ -108,7 +108,7 @@ partial class MainForm
             MultiSelect = false,
             SelectionMode = DataGridViewSelectionMode.CellSelect,
             EditMode = DataGridViewEditMode.EditOnKeystrokeOrF2,
-            AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None,
+            AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.AllCells,
             RowHeadersWidth = 36,
             ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
             ColumnHeadersHeight = 26,

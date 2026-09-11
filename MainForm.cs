@@ -12,7 +12,13 @@ public partial class MainForm : Form
     private List<FxEntry> _allEntries = [];
     private List<FxEntry> _visibleEntries = [];
     private TranslationStore _store = new();
-    private bool _dirty;
+    private bool _dirtyFlag;
+
+    private bool _dirty
+    {
+        get => _dirtyFlag;
+        set { _dirtyFlag = value; UpdateTitle(); }
+    }
 
     // Fixed read-only column indices
     private const int ColFile = 0;
@@ -193,6 +199,14 @@ public partial class MainForm : Form
         if (_fxFolder is not null) dlg.InitialDirectory = _fxFolder;
         if (dlg.ShowDialog() != DialogResult.OK) return;
 
+        if (_dirty)
+        {
+            var r = MessageBox.Show("You have unsaved changes. Save before opening a new folder?",
+                "FxTranslator", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (r == DialogResult.Cancel) return;
+            if (r == DialogResult.Yes) Save();
+        }
+
         _fxFolder = dlg.SelectedPath;
 
         _store = TranslationStore.Load(TransFile);
@@ -211,17 +225,22 @@ public partial class MainForm : Form
     {
         if (_fxFolder is null) return;
 
-        _allEntries = Directory
-            .EnumerateFiles(_fxFolder, "*.fx", SearchOption.AllDirectories)
-            .OrderBy(f => f)
-            .SelectMany(FxParser.Parse)
-            .ToList();
+        BeginBusy("Scanning .fx files…");
+        try
+        {
+            _allEntries = Directory
+                .EnumerateFiles(_fxFolder, "*.fx", SearchOption.AllDirectories)
+                .OrderBy(f => f)
+                .SelectMany(FxParser.Parse)
+                .ToList();
 
-        RebuildColumns();
-        ApplyFilter();
+            RebuildColumns();
+            ApplyFilter();
 
-        Text = $"FxTranslator — {Path.GetFileName(_fxFolder)}";
-        SetStatus($"Loaded {_allEntries.Count} strings from {_fxFolder}");
+            UpdateTitle();
+            SetStatus($"Loaded {_allEntries.Count} strings from {_fxFolder}");
+        }
+        finally { EndBusy(); }
     }
 
     private void Save()
@@ -244,30 +263,38 @@ public partial class MainForm : Form
         _dirty = false;
 
         var fxFiles = Directory
-            .EnumerateFiles(_fxFolder, "*.fx", SearchOption.TopDirectoryOnly)
+            .EnumerateFiles(_fxFolder, "*.fx", SearchOption.AllDirectories)
             .OrderBy(f => f)
             .ToList();
 
-        if (fxFiles.Count == 0) { MessageBox.Show("No .fx files found in the root of the open folder.", "FxTranslator"); return; }
+        if (fxFiles.Count == 0) { MessageBox.Show("No .fx files found in the open folder.", "FxTranslator"); return; }
 
         int totalWritten = 0;
 
-        foreach (string lang in _store.Languages)
+        BeginBusy("Exporting translated .fx files…");
+        try
         {
-            // Create subfolder next to (sibling of) the source folder
-            string parentDir = Path.GetDirectoryName(_fxFolder) ?? _fxFolder;
-            string sourceName = Path.GetFileName(_fxFolder);
-            string outDir = Path.Combine(parentDir, $"{sourceName}_{lang}");
-            Directory.CreateDirectory(outDir);
-
-            foreach (string fxPath in fxFiles)
+            foreach (string lang in _store.Languages)
             {
-                string translated = FxParser.TranslateFile(fxPath, lang, _store);
-                string destPath = Path.Combine(outDir, Path.GetFileName(fxPath));
-                File.WriteAllText(destPath, translated, Encoding.UTF8);
-                totalWritten++;
+                // Create subfolder next to (sibling of) the source folder
+                string parentDir = Path.GetDirectoryName(_fxFolder) ?? _fxFolder;
+                string sourceName = Path.GetFileName(_fxFolder);
+                string outDir = Path.Combine(parentDir, $"{sourceName}_{lang}");
+                Directory.CreateDirectory(outDir);
+
+                foreach (string fxPath in fxFiles)
+                {
+                    string translated = FxParser.TranslateFile(fxPath, lang, _store);
+                    // preserve subfolder structure relative to the source folder
+                    string relPath = Path.GetRelativePath(_fxFolder, fxPath);
+                    string destPath = Path.Combine(outDir, relPath);
+                    Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
+                    File.WriteAllText(destPath, translated, Encoding.UTF8);
+                    totalWritten++;
+                }
             }
         }
+        finally { EndBusy(); }
 
         string summary = string.Join("\n", _store.Languages.Select(l =>
         {
@@ -306,13 +333,14 @@ public partial class MainForm : Form
         if (_store.Languages.Count == 0) { MessageBox.Show("No languages to remove.", "FxTranslator"); return; }
 
         string options = string.Join(", ", _store.Languages);
-        string? lang = Prompt("Remove Language", $"Language to remove ({options}):");
-        if (lang is null) return;
-        lang = lang.Trim();
+        string? input = Prompt("Remove Language", $"Language to remove ({options}):");
+        if (input is null) return;
+        input = input.Trim();
 
-        if (!_store.Languages.Contains(lang, StringComparer.OrdinalIgnoreCase))
+        string? lang = _store.Languages.FirstOrDefault(l => string.Equals(l, input, StringComparison.OrdinalIgnoreCase));
+        if (lang is null)
         {
-            MessageBox.Show($"Language \"{lang}\" not found.", "FxTranslator");
+            MessageBox.Show($"Language \"{input}\" not found.", "FxTranslator");
             return;
         }
 
@@ -358,6 +386,24 @@ public partial class MainForm : Form
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private void SetStatus(string msg) => lblStatus.Text = msg;
+
+    private void UpdateTitle() =>
+        Text = _fxFolder is null ? "FxTranslator" : $"FxTranslator — {Path.GetFileName(_fxFolder)}{(_dirty ? " *" : "")}";
+
+    private void BeginBusy(string status)
+    {
+        UseWaitCursor = true;
+        progBar.Style = ProgressBarStyle.Marquee;
+        progBar.Visible = true;
+        SetStatus(status);
+        Application.DoEvents();
+    }
+
+    private void EndBusy()
+    {
+        progBar.Visible = false;
+        UseWaitCursor = false;
+    }
 
     private static string? Prompt(string title, string message)
     {
